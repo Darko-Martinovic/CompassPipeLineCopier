@@ -4,8 +4,14 @@ using MongoDB.Bson;
 using MongoDB.Driver;
 
 // Configuration
-var sourceNamespace = "ThirdApi.Pump";
-var targetNamespaces = new[] { "PreProd.Pump", "Staging.Pump" };
+// Usage: dotnet run -- [sourceDb] [targetDb1] [targetDb2] ...
+// Defaults: source=ThirdApi, targets=PreProd,Staging. Collection name is always "Pump".
+const string collectionName = "Pump";
+var sourceDbName = args.Length > 0 ? args[0] : "ThirdApi";
+var targetDbNames = args.Length > 1 ? args[1..] : new[] { "PreProd", "Staging" };
+
+var sourceNamespace = $"{sourceDbName}.{collectionName}";
+var targetNamespaces = targetDbNames.Select(db => $"{db}.{collectionName}").ToArray();
 var mongoConnectionString = "mongodb://localhost:27017";
 
 Console.WriteLine("MongoDB Compass Pipeline & Index Copier");
@@ -125,74 +131,93 @@ try
 
     var sourceParts = sourceNamespace.Split('.');
     var sourceDb = client.GetDatabase(sourceParts[0]);
-    var sourceCollection = sourceDb.GetCollection<BsonDocument>(sourceParts[1]);
 
-    // Get source indexes
-    var sourceIndexes = sourceCollection.Indexes.List().ToList();
-    Console.WriteLine($"Source indexes in {sourceNamespace}: {sourceIndexes.Count}");
-
-    foreach (var idx in sourceIndexes)
+    var sourceCollections = sourceDb.ListCollectionNames().ToList();
+    if (!sourceCollections.Contains(sourceParts[1]))
     {
-        var name = idx.GetValue("name", "unknown").AsString;
-        var key = idx.GetValue("key", new BsonDocument()).ToBsonDocument();
-        Console.WriteLine($"  - {name}: {key}");
+        Console.WriteLine($"WARNING: Source collection {sourceNamespace} does not exist. Skipping index copy.");
+        Console.WriteLine();
     }
-    Console.WriteLine();
-
-    foreach (var targetNamespace in targetNamespaces)
+    else
     {
-        Console.WriteLine($"  → {targetNamespace}:");
+        var sourceCollection = sourceDb.GetCollection<BsonDocument>(sourceParts[1]);
 
-        var targetParts = targetNamespace.Split('.');
-        var targetDb = client.GetDatabase(targetParts[0]);
-        var targetCollection = targetDb.GetCollection<BsonDocument>(targetParts[1]);
-
-        var created = 0;
-        var skipped = 0;
+        // Get source indexes
+        var sourceIndexes = sourceCollection.Indexes.List().ToList();
+        Console.WriteLine($"Source indexes in {sourceNamespace}: {sourceIndexes.Count}");
 
         foreach (var idx in sourceIndexes)
         {
             var name = idx.GetValue("name", "unknown").AsString;
-
-            // Skip the default _id index
-            if (name == "_id_")
-            {
-                skipped++;
-                continue;
-            }
-
-            try
-            {
-                var key = idx.GetValue("key").ToBsonDocument();
-                var options = new CreateIndexOptions<BsonDocument> { Name = name };
-
-                // Copy common index options if they exist
-                if (idx.Contains("unique") && idx["unique"].AsBoolean)
-                    options.Unique = true;
-                if (idx.Contains("sparse") && idx["sparse"].AsBoolean)
-                    options.Sparse = true;
-                if (idx.Contains("expireAfterSeconds"))
-                    options.ExpireAfter = TimeSpan.FromSeconds(idx["expireAfterSeconds"].AsInt32);
-                if (idx.Contains("partialFilterExpression"))
-                    options.PartialFilterExpression = new BsonDocumentFilterDefinition<BsonDocument>(idx["partialFilterExpression"].ToBsonDocument());
-
-                var indexModel = new CreateIndexModel<BsonDocument>(key, options);
-                targetCollection.Indexes.CreateOne(indexModel);
-
-                Console.WriteLine($"      ✓ {name}");
-                created++;
-            }
-            catch (MongoCommandException ex) when (ex.Message.Contains("already exists"))
-            {
-                Console.WriteLine($"      ○ {name} (already exists)");
-                skipped++;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"      ✗ {name}: {ex.Message}");
-            }
+            var key = idx.GetValue("key", new BsonDocument()).ToBsonDocument();
+            Console.WriteLine($"  - {name}: {key}");
         }
-        Console.WriteLine($"    Created: {created}, Skipped: {skipped}\n");
+        Console.WriteLine();
+
+        foreach (var targetNamespace in targetNamespaces)
+        {
+            Console.WriteLine($"  → {targetNamespace}:");
+
+            var targetParts = targetNamespace.Split('.');
+            var targetDb = client.GetDatabase(targetParts[0]);
+
+            // Create destination collection if it doesn't exist (also creates the database).
+            var existingTargetCollections = targetDb.ListCollectionNames().ToList();
+            if (!existingTargetCollections.Contains(targetParts[1]))
+            {
+                targetDb.CreateCollection(targetParts[1]);
+                Console.WriteLine($"      (created collection {targetNamespace})");
+            }
+
+            var targetCollection = targetDb.GetCollection<BsonDocument>(targetParts[1]);
+
+            var created = 0;
+            var skipped = 0;
+
+            foreach (var idx in sourceIndexes)
+            {
+                var name = idx.GetValue("name", "unknown").AsString;
+
+                // Skip the default _id index
+                if (name == "_id_")
+                {
+                    skipped++;
+                    continue;
+                }
+
+                try
+                {
+                    var key = idx.GetValue("key").ToBsonDocument();
+                    var options = new CreateIndexOptions<BsonDocument> { Name = name };
+
+                    // Copy common index options if they exist
+                    if (idx.Contains("unique") && idx["unique"].AsBoolean)
+                        options.Unique = true;
+                    if (idx.Contains("sparse") && idx["sparse"].AsBoolean)
+                        options.Sparse = true;
+                    if (idx.Contains("expireAfterSeconds"))
+                        options.ExpireAfter = TimeSpan.FromSeconds(idx["expireAfterSeconds"].AsInt32);
+                    if (idx.Contains("partialFilterExpression"))
+                        options.PartialFilterExpression = new BsonDocumentFilterDefinition<BsonDocument>(idx["partialFilterExpression"].ToBsonDocument());
+
+                    var indexModel = new CreateIndexModel<BsonDocument>(key, options);
+                    targetCollection.Indexes.CreateOne(indexModel);
+
+                    Console.WriteLine($"      ✓ {name}");
+                    created++;
+                }
+                catch (MongoCommandException ex) when (ex.Message.Contains("already exists"))
+                {
+                    Console.WriteLine($"      ○ {name} (already exists)");
+                    skipped++;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"      ✗ {name}: {ex.Message}");
+                }
+            }
+            Console.WriteLine($"    Created: {created}, Skipped: {skipped}\n");
+        }
     }
 }
 catch (Exception ex)
