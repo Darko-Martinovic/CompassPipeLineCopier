@@ -29,3 +29,5 @@ jobs:
       - run: dotnet build CompassPipelineCopier.slnx
       # The tests start MongoDB in a container with Testcontainers
       - run: dotnet test --solution CompassPipelineCopier.slnx --no-build
+      # The package release.yml publishes
+      - run: dotnet pack src/PipelineCopier --no-build -o artifacts

@@ -60,9 +60,19 @@ A dry run works out the same outcomes from the indexes the target already has, w
 
 Reads `$indexStats` on the source collection and prints how many operations used each index since the server started counting. On a sharded cluster the counts of every shard are added up. An index with no operations is a candidate to drop. The report ends with the profiler commands for finding queries that need an index the collection does not have yet.
 
+## Install
+
+The tool is the .NET tool [CompassPipelineCopier](https://www.nuget.org/packages/CompassPipelineCopier) on nuget.org:
+
+```
+dotnet tool install --global CompassPipelineCopier
+```
+
+That adds the command `compass-pipeline-copier`. `dotnet tool update --global CompassPipelineCopier` updates it.
+
 ## Requirements
 
-- [.NET 10 SDK](https://dotnet.microsoft.com/download)
+- The [.NET 10](https://dotnet.microsoft.com/download) runtime, or the SDK to build from source
 - A MongoDB server reachable from where the tool runs (the tests use MongoDB 8.0)
 - MongoDB Compass installed for the current user, for the saved-pipelines step
 - A MongoDB user with `read` on the source database, `readWrite` on the target databases, and the `indexStats` action on the source for the report (the built-in `clusterMonitor` role has it)
@@ -70,8 +80,10 @@ Reads `$indexStats` on the source collection and prints how many operations used
 ## Usage
 
 ```
-dotnet run --project src/PipelineCopier -- [source] [targets...] [options]
+compass-pipeline-copier [source] [targets...] [options]
 ```
+
+From a clone of this repository, `dotnet run --project src/PipelineCopier --` takes the place of `compass-pipeline-copier`.
 
 `source` and each target are either a database name, for the collection named with `--collection`, or a full `database.collection` namespace. With no arguments, the source is `ThirdApi` and the targets are `PreProd` and `Staging`, all in the collection `Pump`.
 
@@ -92,32 +104,32 @@ The connection string is never printed: when the server cannot be reached, the o
 See what a run would change, without changing anything:
 
 ```
-dotnet run --project src/PipelineCopier -- ThirdApi PreProd Staging --dry-run
+compass-pipeline-copier ThirdApi PreProd Staging --dry-run
 ```
 
 Copy the pipelines and indexes of `ThirdApi.Pump` to `PreProd.Pump` and `Staging.Pump`:
 
 ```
-dotnet run --project src/PipelineCopier -- ThirdApi PreProd Staging
+compass-pipeline-copier ThirdApi PreProd Staging
 ```
 
 Use another collection, and make the target's saved pipelines exactly the source's:
 
 ```
-dotnet run --project src/PipelineCopier -- ThirdApi PreProd --collection Tos --mirror
+compass-pipeline-copier ThirdApi PreProd --collection Tos --mirror
 ```
 
 Copy between collections with different names, pipelines only:
 
 ```
-dotnet run --project src/PipelineCopier -- Shop.orders.2024 Archive.orders.2024 --skip indexes report
+compass-pipeline-copier Shop.orders.2024 Archive.orders.2024 --skip indexes report
 ```
 
 Copy only the indexes, to a server that needs a password:
 
 ```
 MONGODB_URI="mongodb://admin:secret@db.example.com:27017/?authSource=admin" \
-  dotnet run --project src/PipelineCopier -- ThirdApi PreProd --skip pipelines
+  compass-pipeline-copier ThirdApi PreProd --skip pipelines
 ```
 
 ### Output
@@ -169,6 +181,13 @@ The tests start MongoDB 8.0 in a container with [Testcontainers](https://dotnet.
 
 GitHub Actions runs the build and the tests on every push to `main` and every pull request.
 
+## Releasing
+
+1. Raise `<Version>` in `src/PipelineCopier/PipelineCopier.csproj` and merge the change.
+2. Push a tag `v` followed by that version, for example `v1.1.0`, on the merged commit, and publish a GitHub release on it.
+
+Publishing the release runs `.github/workflows/release.yml`, which packs the tool, pushes it to nuget.org and attaches the package to the release. It stops if the tag doesn't match the version. nuget.org trusts the workflow through a Trusted Publishing policy, so the repository holds no API key, only the secret `NUGET_USER` with the nuget.org user name.
+
 ## Project layout
 
 ```
@@ -180,6 +199,7 @@ src/PipelineCopier/
   IndexUsage.cs       the $indexStats report
   MongoNamespace.cs   database.collection names
   CompassFolder.cs    where Compass keeps saved pipelines on each system
+  PackageReadme.md    the README nuget.org shows
 tests/PipelineCopier.Tests/
 ```
 

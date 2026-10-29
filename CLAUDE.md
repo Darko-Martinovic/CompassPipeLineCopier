@@ -14,7 +14,9 @@ dotnet test --solution CompassPipelineCopier.slnx
 dotnet run --project src/PipelineCopier -- --dry-run
 ```
 
-`TreatWarningsAsErrors` is on in both projects, which includes NuGet's vulnerability audit. The tests start `mongo:8.0` with Testcontainers.MongoDb, one container for the whole assembly (`MongoFixture`, an assembly fixture); each test uses databases of its own (`MongoFixture.NewDatabase`) and a temporary SavedPipelines folder (`CompassFolderFixture`). On this machine Testcontainers runs on Podman and needs `TESTCONTAINERS_RYUK_DISABLED=true`. CI (`.github/workflows/build.yml`) runs on ubuntu-22.04, because MongoDB 8 does not start on the newer kernel of ubuntu-latest.
+`TreatWarningsAsErrors` is on in both projects, which includes NuGet's vulnerability audit. The tests start `mongo:8.0` with Testcontainers.MongoDb, one container for the whole assembly (`MongoFixture`, an assembly fixture); each test uses databases of its own (`MongoFixture.NewDatabase`) and a temporary SavedPipelines folder (`CompassFolderFixture`). On this machine Testcontainers runs on Podman and needs `TESTCONTAINERS_RYUK_DISABLED=true`. CI (`.github/workflows/build.yml`) runs on ubuntu-22.04, because MongoDB 8 does not start on the newer kernel of ubuntu-latest, and packs the tool.
+
+The project is the .NET tool `CompassPipelineCopier` (command and assembly name `compass-pipeline-copier`; the namespace stays `PipelineCopier`). `release.yml` publishes it to nuget.org when a GitHub release is published, through Trusted Publishing (the repository secret `NUGET_USER`, no API key), after checking the tag is `v` plus `<Version>` from the csproj. Push the tag first and create the release with `gh release create vX.Y.Z --verify-tag`. `PackageReadme.md` is the package's README; keep its options in step with the README's.
 
 ## Code
 
