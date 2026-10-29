@@ -80,3 +80,6 @@ appsettings.Local.json
 *.pfx
 *.key
 *.pem
+
+# Claude Code's per-user settings
+.claude/settings.local.json
