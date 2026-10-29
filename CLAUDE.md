@@ -2,36 +2,38 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Build & run
+`README.md` explains what the tool is for, its options and the rules it follows. This file adds what matters when changing it.
 
-Single-file .NET 8 console app, one project (`PipelineCopier.csproj`).
+## Build, run, test
+
+.NET 10 console app (`src/PipelineCopier`) with an xunit v3 test project (`tests/PipelineCopier.Tests`), in `CompassPipelineCopier.slnx`. `global.json` pins the SDK band and opts `dotnet test` into Microsoft.Testing.Platform.
 
 ```powershell
-dotnet build
-dotnet run
+dotnet build CompassPipelineCopier.slnx
+dotnet test --solution CompassPipelineCopier.slnx
+dotnet run --project src/PipelineCopier -- --dry-run
 ```
 
-There are no tests, no lint config, and no CI. The solution file `CompassPipelineCopier.sln` exists but `dotnet` commands work fine against the csproj directly.
+`TreatWarningsAsErrors` is on in both projects, which includes NuGet's vulnerability audit. The tests start `mongo:8.0` with Testcontainers.MongoDb, one container for the whole assembly (`MongoFixture`, an assembly fixture); each test uses databases of its own (`MongoFixture.NewDatabase`) and a temporary SavedPipelines folder (`CompassFolderFixture`). On this machine Testcontainers runs on Podman and needs `TESTCONTAINERS_RYUK_DISABLED=true`. CI (`.github/workflows/build.yml`) runs on ubuntu-22.04, because MongoDB 8 does not start on the newer kernel of ubuntu-latest.
 
-Note: stale `obj/Debug/net10.0/` artifacts exist from a prior retarget — the project is currently `net8.0`. Ignore those folders; do not "fix" them by changing `TargetFramework`.
+## Code
 
-## What this tool does
+- `App.cs`: the System.CommandLine root command and `Run`, which runs the three steps and writes the report to a `TextWriter` (tests pass a `StringWriter`). Exit codes: 0, 1 (`Failed`), 2 (`InvalidArguments`).
+- `SavedPipelines.cs`: the Compass step, pure file work, with a `TimeProvider` for `lastModified`.
+- `IndexCopier.cs`: creates each index with a raw `createIndexes` command from the source's `listIndexes` document minus `v` and `ns`, so every option is copied without mapping it. Don't go back to `CreateIndexOptions`, which dropped collation, text weights and others. Errors 85 and 86 are conflicts, anything else from the server is a failure.
+- `IndexUsage.cs`: `$indexStats`.
+- `MongoNamespace.cs`: `database.collection`, split at the first dot (collection names may contain dots).
 
-It runs three sequential phases against a hardcoded source/target configuration and prints progress to stdout. There is no CLI, no config file, and no DI — everything is top-level statements in `Program.cs`.
+## Rules the tool keeps (tests cover each)
 
-1. **Copy Compass saved pipelines** — reads JSON files from `%APPDATA%\MongoDB Compass\SavedPipelines\`, finds those whose `namespace` matches the source, and writes new copies for each target namespace. Each copy gets a fresh GUID `id`, the rewritten `namespace`, an updated `lastModified` timestamp, and any `_id` field stripped (Compass rejects pipelines that have one). **Before writing, it deletes existing files in that folder whose `namespace` matches a target** — this is intentional cleanup of prior runs, not a bug.
-2. **Copy MongoDB indexes** — connects to MongoDB, lists indexes on the source collection, and recreates each on every target collection. Skips `_id_`. Preserves `unique`, `sparse`, `expireAfterSeconds`, `partialFilterExpression`. "Already exists" errors are swallowed and counted as skipped.
-3. **Index usage report** — runs `$indexStats` on the source and prints per-index op counts. Read-only.
-
-## Configuration is hardcoded
-
-The source namespace, target namespaces, and Mongo connection string are top-of-file `var`s in `Program.cs` (lines 7–9). Editing them is the supported way to change behavior — there is no args parsing or env-var fallback. If asked to add configurability, propose the approach before refactoring; the current shape is deliberately minimal.
-
-Namespaces are split on `.` into `database.collection` (see `sourceParts`/`targetParts`). A namespace with a dotted collection name would break this — keep that in mind if changing the format.
+- Saved pipelines are matched by name: a target pipeline with a source pipeline's name is replaced, others are kept unless `--mirror`.
+- Nothing is deleted when the source has no saved pipelines, or when a file isn't a saved pipeline.
+- Copies are written (to `<id>.json.partial`, then moved) before anything is deleted.
+- `--dry-run` changes nothing, in the folder or in MongoDB.
+- The connection string is never printed (it can hold a password); errors name the servers only, and `--connection` has no default value so `--help` can't show `MONGODB_URI`.
 
 ## Operational gotchas
 
-- **Compass must be restarted** to see newly written pipeline files (the final printed line says this).
-- **Phase 1 mutates the user's Compass profile directory.** It deletes files under `%APPDATA%\MongoDB Compass\SavedPipelines\` matching target namespaces. Do not run experimentally against unfamiliar target namespaces — you will delete the user's existing pipelines for those namespaces.
-- **Phase 2 writes to MongoDB** at `localhost:27017`. Index creation against a populated collection can be expensive; this tool does not pass `background` or use `createIndexes` batching.
-- **Phase 3 requires `$indexStats` privileges** and silently degrades to a printed error if the connection fails — phases 1 and 2 are independent and will already have run.
+- The real SavedPipelines folder is the user's Compass profile. Don't run the tool against it without `--dry-run` or `--compass-folder` pointing somewhere else.
+- The defaults (`ThirdApi` to `PreProd` and `Staging`, collection `Pump`) are the user's own working setup; keep them.
+- Compass has to be restarted to see new pipeline files.
