@@ -27,8 +27,11 @@ public static class IndexUsage
                 return new IndexUse(
                     stat["name"].AsString,
                     accesses.GetValue("ops", 0).ToInt64(),
-                    since.IsBsonDateTime ? since.ToUniversalTime() : null);
+                    since.IsBsonDateTime ? since.ToUniversalTime() : (DateTime?)null);
             })
+            // Through mongos there is a row for each shard (and each host); they add up
+            .GroupBy(use => use.Name, StringComparer.Ordinal)
+            .Select(uses => new IndexUse(uses.Key, uses.Sum(u => u.Operations), uses.Min(u => u.Since)))
             .OrderBy(use => use.Name, StringComparer.Ordinal)
             .ToList();
     }

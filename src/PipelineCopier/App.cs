@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Text.Json;
 using MongoDB.Driver;
 
 namespace PipelineCopier;
@@ -133,7 +134,7 @@ public sealed class Run(RunOptions options, TextWriter output, TimeProvider time
 
         if (!options.Skip.Contains(Step.Pipelines))
         {
-            CopyPipelines();
+            CopyPipelines(cancellationToken);
         }
 
         if (!options.Skip.Contains(Step.Indexes) || !options.Skip.Contains(Step.Report))
@@ -151,7 +152,7 @@ public sealed class Run(RunOptions options, TextWriter output, TimeProvider time
         return _failed ? App.Failed : App.Succeeded;
     }
 
-    private void CopyPipelines()
+    private void CopyPipelines(CancellationToken cancellationToken)
     {
         Heading("Saved pipelines (Compass)");
         var pipelines = new SavedPipelines(options.SavedPipelinesFolder, time);
@@ -164,11 +165,32 @@ public sealed class Run(RunOptions options, TextWriter output, TimeProvider time
             return;
         }
 
-        var report = pipelines.Copy(options.Source, options.Targets, options.Mirror, options.DryRun);
+        PipelineCopyReport report;
+        try
+        {
+            report = pipelines.Copy(options.Source, options.Targets, options.Mirror, options.DryRun, cancellationToken);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _failed = true;
+            output.WriteLine($"Could not read the folder: {e.Message}");
+            output.WriteLine();
+            return;
+        }
 
         foreach (var file in report.Unreadable)
         {
             output.WriteLine($"  Left alone, not a saved pipeline: {file}");
+        }
+
+        if (report.Unnamed > 0)
+        {
+            output.WriteLine($"  Not copied: {report.Unnamed} pipeline(s) of {options.Source} without a name");
+        }
+
+        foreach (var name in report.DuplicateNames ?? [])
+        {
+            output.WriteLine($"  More than one pipeline of {options.Source} is named {name}; each target gets all of them");
         }
 
         if (report.SourceCount == 0)
@@ -218,9 +240,9 @@ public sealed class Run(RunOptions options, TextWriter output, TimeProvider time
         {
             settings = MongoClientSettings.FromConnectionString(options.ConnectionString);
         }
-        catch (MongoConfigurationException)
+        catch (Exception)
         {
-            // The driver's message repeats the connection string, password and all
+            // The driver's messages can repeat the connection string, password and all
             _failed = true;
             output.WriteLine("The MongoDB connection string is not valid.");
             output.WriteLine();
@@ -228,7 +250,8 @@ public sealed class Run(RunOptions options, TextWriter output, TimeProvider time
         }
 
         // A server that isn't there should say so quickly, not after the driver's 30 seconds
-        if (!options.ConnectionString.Contains("serverSelectionTimeoutMS", StringComparison.OrdinalIgnoreCase))
+        var query = options.ConnectionString.Split('?', 2) is [_, var rest] ? rest : "";
+        if (!query.Contains("serverSelectionTimeoutMS", StringComparison.OrdinalIgnoreCase))
         {
             settings.ServerSelectionTimeout = TimeSpan.FromSeconds(10);
         }
@@ -265,17 +288,27 @@ public sealed class Run(RunOptions options, TextWriter output, TimeProvider time
     {
         Heading("Indexes (MongoDB)");
         var copier = new IndexCopier(client);
-        var sourceIndexes = await copier.ListAsync(options.Source, cancellationToken);
+        SourceCollection? sourceCollection;
+        try
+        {
+            sourceCollection = await copier.ReadSourceAsync(options.Source, cancellationToken);
+        }
+        catch (InvalidOperationException e)
+        {
+            output.WriteLine($"{e.Message} No indexes were copied.");
+            output.WriteLine();
+            return;
+        }
 
-        if (sourceIndexes is null)
+        if (sourceCollection is null)
         {
             output.WriteLine($"The collection {options.Source} doesn't exist, so no indexes were copied.");
             output.WriteLine();
             return;
         }
 
-        output.WriteLine($"Indexes on {options.Source}: {sourceIndexes.Count}");
-        foreach (var index in sourceIndexes)
+        output.WriteLine($"Indexes on {options.Source}: {sourceCollection.Indexes.Count}");
+        foreach (var index in sourceCollection.Indexes)
         {
             output.WriteLine($"  - {index["name"].AsString}: {index["key"]}");
         }
@@ -285,10 +318,18 @@ public sealed class Run(RunOptions options, TextWriter output, TimeProvider time
         foreach (var target in options.Targets)
         {
             output.WriteLine($"  → {target}:");
-            var result = await copier.CopyAsync(sourceIndexes, target, options.DryRun, cancellationToken);
+            var result = await copier.CopyAsync(sourceCollection, target, options.DryRun, cancellationToken);
+            if (result.Error is not null)
+            {
+                _failed = true;
+                output.WriteLine($"      ✗ {result.Error}");
+                output.WriteLine();
+                continue;
+            }
+
             if (result.CollectionCreated)
             {
-                output.WriteLine($"      (created the collection {target})");
+                output.WriteLine($"      ({(options.DryRun ? "would create" : "created")} the collection {target}, with the source's options)");
             }
 
             foreach (var index in result.Indexes)
@@ -337,7 +378,7 @@ public sealed class Run(RunOptions options, TextWriter output, TimeProvider time
         output.WriteLine();
         output.WriteLine("Indexes with no ops are candidates to drop. To find missing ones, profile slow queries:");
         output.WriteLine("  db.setProfilingLevel(1, { slowms: 100 })");
-        output.WriteLine($"  db.system.profile.find({{ ns: '{options.Source}' }}).sort({{ ts: -1 }}).limit(10)");
+        output.WriteLine($"  db.system.profile.find({{ ns: {JsonSerializer.Serialize(options.Source.ToString())} }}).sort({{ ts: -1 }}).limit(10)");
         output.WriteLine("and look for planSummary: COLLSCAN.");
         output.WriteLine();
     }

@@ -33,14 +33,17 @@ The rules that keep this safe to run again:
 - **Pipelines are matched by name.** A target pipeline with the same name as a source pipeline is replaced by the new copy. Running the tool twice leaves one copy of each pipeline, not two.
 - **Pipelines that exist only on a target are kept.** If you built a pipeline on `PreProd.Pump` that the source does not have, it stays. Use `--mirror` to delete those instead, so that each target ends up with exactly the source's pipelines.
 - **A source with no saved pipelines changes nothing.** A typo in the source name, or the wrong folder, never empties a target.
-- **Copies are written before anything is deleted,** and each file is written under a temporary name first, so an interrupted run never leaves half a file or a missing pipeline.
-- **Files that are not saved pipelines are left alone** and listed in the output.
+- **Copies are written before anything is deleted,** and each file is written under a temporary name first. If a copy can't be written, the copies already written for that target are taken back and nothing is deleted. A run stopped with Ctrl+C stops between targets, and the temporary files of a run that was killed are removed by the next one.
+- **Files that are not saved pipelines are left alone** and listed in the output: files that aren't JSON, have no namespace, or have the same property twice.
+- **Source pipelines without a name are not copied,** since they can't be matched on a target. Compass always names a pipeline it saves, so this only happens to files edited by hand. If two source pipelines share a name, the output says so and each target gets both.
 
 Compass reads this folder when it starts, so restart it to see the copies.
 
 ### 2. Indexes
 
-The tool lists the source collection's indexes and creates each of them, except `_id_`, on every target collection. The target collection (and database) is created first if it does not exist.
+The tool lists the source collection's indexes and creates each of them on every target collection, except `_id_` and a clustered collection's clustered index, which come with the collection.
+
+A target collection that does not exist is created first (with its database), with the options the source was created with: a time-series collection becomes a time-series collection with the same time and meta fields, and a clustered, capped or validated collection, or one with a default collation, is created the same way. A target that already exists is used as it is.
 
 Each index is created from the definition `listIndexes` reports for it, so every option it was made with is copied: unique, sparse, TTL, partial filter expressions, collation, text index weights and languages, wildcard projections, hidden, 2d and 2dsphere settings. Each one ends up as:
 
@@ -49,18 +52,20 @@ Each index is created from the definition `listIndexes` reports for it, so every
 | created | The index did not exist on the target and was built. |
 | already exists | An identical index is there already. Nothing changed. |
 | conflict | The target has a different index with the same name, or the same keys under a different name. It is left as it is and the server's explanation is printed. |
-| failed | The server refused the index for another reason. The run ends with exit code 1. |
+| failed | The server refused the index for another reason, for example a unique index over duplicate values on the target. The run ends with exit code 1. |
+
+A dry run works out the same outcomes from the indexes the target already has, without building anything. A target the tool can't work on (a view, a database the user can't write to, or a name that differs from an existing database's only in case) is reported as failed, and the other targets are still copied. A source that is a view has no indexes to copy, and the step says so.
 
 ### 3. Index usage report
 
-Reads `$indexStats` on the source collection and prints how many operations used each index since the server started counting. An index with no operations is a candidate to drop. The report ends with the profiler commands for finding queries that need an index the collection does not have yet.
+Reads `$indexStats` on the source collection and prints how many operations used each index since the server started counting. On a sharded cluster the counts of every shard are added up. An index with no operations is a candidate to drop. The report ends with the profiler commands for finding queries that need an index the collection does not have yet.
 
 ## Requirements
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download)
 - A MongoDB server reachable from where the tool runs (the tests use MongoDB 8.0)
 - MongoDB Compass installed for the current user, for the saved-pipelines step
-- A MongoDB user that can list collections and indexes, create collections and indexes on the targets, and run `$indexStats` on the source (`readWrite` on the target databases and `clusterMonitor` cover it)
+- A MongoDB user with `read` on the source database, `readWrite` on the target databases, and the `indexStats` action on the source for the report (the built-in `clusterMonitor` role has it)
 
 ## Usage
 
@@ -143,7 +148,7 @@ Pipelines saved for ThirdApi.Pump: 3
 |------|---------|
 | 0 | Everything asked for was done. Index conflicts are reported but do not fail the run. |
 | 1 | Something failed: a pipeline file could not be written or deleted, an index could not be created, or MongoDB could not be reached. |
-| 2 | The arguments are wrong, for example a target that is also the source. |
+| 2 | The arguments are wrong: a target that is also the source, a name MongoDB would refuse (an empty name, a database name with a space or one of `/\."$*<>:|?`, a collection name with `$`, or one of MongoDB's own `system.` collections), or a connection string given where a database belongs. |
 
 ## Things to know
 
@@ -151,6 +156,7 @@ Pipelines saved for ThirdApi.Pump: 3
 - **The pipeline text is copied as it is.** Stages that name a collection, such as `$lookup`, are relative to the current database and work on the target. A `$merge` or `$out` that names a database explicitly still points at the source's database.
 - **Names are compared exactly.** `Ingredients` and `Ingredients ` (with a trailing space) are two different pipelines.
 - **Building indexes on a large, populated target takes time and server resources.** Try `--dry-run` first, and run against production-sized data outside busy hours.
+- **On a sharded cluster** the tool works through `mongos`. An index counts as already there only when no shard built it.
 
 ## Building and testing
 
@@ -176,3 +182,7 @@ src/PipelineCopier/
   CompassFolder.cs    where Compass keeps saved pipelines on each system
 tests/PipelineCopier.Tests/
 ```
+
+## License
+
+[MIT](LICENSE)

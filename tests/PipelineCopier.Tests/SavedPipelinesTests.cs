@@ -1,3 +1,5 @@
+using System.Runtime.Versioning;
+
 namespace PipelineCopier.Tests;
 
 public sealed class SavedPipelinesTests : IDisposable
@@ -11,7 +13,7 @@ public sealed class SavedPipelinesTests : IDisposable
 
     private PipelineCopyReport Copy(bool mirror = false, bool dryRun = false, params MongoNamespace[] targets) =>
         new SavedPipelines(_folder.Path, new FixedTime(Now))
-            .Copy(Source, targets.Length == 0 ? [PreProd, Staging] : targets, mirror, dryRun);
+            .Copy(Source, targets.Length == 0 ? [PreProd, Staging] : targets, mirror, dryRun, TestContext.Current.CancellationToken);
 
     [Fact]
     public void Each_target_gets_a_copy_of_every_source_pipeline()
@@ -151,9 +153,125 @@ public sealed class SavedPipelinesTests : IDisposable
         _folder.Save("Shop.orders", "Not this one");
 
         new SavedPipelines(_folder.Path, new FixedTime(Now))
-            .Copy(MongoNamespace.Parse("Shop.orders.2024"), [MongoNamespace.Parse("Archive.orders.2024")], mirror: false, dryRun: false);
+            .Copy(MongoNamespace.Parse("Shop.orders.2024"), [MongoNamespace.Parse("Archive.orders.2024")], mirror: false, dryRun: false, TestContext.Current.CancellationToken);
 
         Assert.Equal(["Totals"], _folder.Names("Archive.orders.2024"));
+    }
+
+    [Fact]
+    public void A_file_with_a_property_twice_is_left_alone()
+    {
+        _folder.Save("ThirdApi.Pump", "Prices");
+        _folder.SaveFile("twice.json", """{ "namespace": "PreProd.Pump", "namespace": "Staging.Pump", "name": "Prices" }""");
+
+        var report = Copy(mirror: true);
+
+        Assert.Contains(report.Unreadable, u => u.StartsWith("twice.json:", StringComparison.Ordinal));
+        Assert.True(File.Exists(Path.Combine(_folder.Path, "twice.json")));
+    }
+
+    [Fact]
+    public void Source_pipelines_without_a_name_are_not_copied_or_matched()
+    {
+        _folder.SaveFile("nameless.json", """{ "id": "nameless", "namespace": "ThirdApi.Pump", "pipelineText": "[]" }""");
+        _folder.SaveFile("target-nameless.json", """{ "id": "target-nameless", "namespace": "PreProd.Pump", "pipelineText": "[]" }""");
+        _folder.Save("ThirdApi.Pump", "Prices");
+
+        var report = Copy(targets: PreProd);
+
+        Assert.Equal(1, report.Unnamed);
+        Assert.Equal(1, report.SourceCount);
+        Assert.True(File.Exists(Path.Combine(_folder.Path, "target-nameless.json")));
+        Assert.Equal(2, _folder.Pipelines().Count(p => (string?)p.Json["namespace"] == "PreProd.Pump"));
+    }
+
+    [Fact]
+    public void Names_more_than_one_source_pipeline_has_are_reported()
+    {
+        _folder.Save("ThirdApi.Pump", "Prices");
+        _folder.Save("ThirdApi.Pump", "Prices");
+
+        var report = Copy(targets: PreProd);
+        Copy(targets: PreProd);
+
+        Assert.Equal(["Prices"], report.DuplicateNames);
+        Assert.Equal(["Prices", "Prices"], _folder.Names("PreProd.Pump"));
+    }
+
+    [Fact]
+    public void Copies_a_stopped_run_left_half_written_are_removed()
+    {
+        _folder.Save("ThirdApi.Pump", "Prices");
+        _folder.SaveFile("0000.json.partial", "{ \"id\": \"00");
+
+        Copy(targets: PreProd);
+
+        Assert.Empty(Directory.GetFiles(_folder.Path, "*.partial"));
+    }
+
+    [Fact]
+    public void A_stopped_run_leaves_each_target_copied_or_untouched()
+    {
+        _folder.Save("ThirdApi.Pump", "Prices");
+        using var stop = new CancellationTokenSource();
+        stop.Cancel();
+
+        Assert.Throws<OperationCanceledException>(() =>
+            new SavedPipelines(_folder.Path, new FixedTime(Now)).Copy(Source, [PreProd], mirror: false, dryRun: false, stop.Token));
+
+        Assert.Empty(_folder.Names("PreProd.Pump"));
+    }
+
+    [Fact]
+    [UnsupportedOSPlatform("windows")]
+    public void A_copy_that_cannot_be_written_takes_back_what_it_wrote_and_deletes_nothing()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Skip("A read-only folder still takes new files on Windows");
+        }
+
+        _folder.Save("ThirdApi.Pump", "Prices");
+        _folder.Save("PreProd.Pump", "Prices");
+        var before = Directory.GetFiles(_folder.Path).Order().ToList();
+        File.SetUnixFileMode(_folder.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            var target = Assert.Single(Copy(mirror: true, targets: PreProd).Targets);
+
+            Assert.NotNull(target.Error);
+            Assert.Empty(target.Copied);
+            Assert.Equal(0, target.Replaced);
+        }
+        finally
+        {
+            File.SetUnixFileMode(_folder.Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        Assert.Equal(before, Directory.GetFiles(_folder.Path).Order().ToList());
+    }
+
+    [Fact]
+    public void A_pipeline_that_cannot_be_deleted_stops_the_target_with_the_copies_written()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Only Windows refuses to delete a read-only file");
+        _folder.Save("ThirdApi.Pump", "Prices");
+        var old = Path.Combine(_folder.Path, $"{_folder.Save("PreProd.Pump", "Prices")}.json");
+        File.SetAttributes(old, FileAttributes.ReadOnly);
+        try
+        {
+            var target = Assert.Single(Copy(targets: PreProd).Targets);
+
+            Assert.NotNull(target.Error);
+            Assert.Equal(["Prices"], target.Copied);
+            Assert.Equal(0, target.Replaced);
+        }
+        finally
+        {
+            File.SetAttributes(old, FileAttributes.Normal);
+        }
+
+        Assert.Equal(["Prices", "Prices"], _folder.Names("PreProd.Pump"));
     }
 
     public void Dispose() => _folder.Dispose();
