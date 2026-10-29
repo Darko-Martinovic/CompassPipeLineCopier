@@ -6,7 +6,33 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- The help shows the executable's name, so it is the tool's command name -->
+    <AssemblyName>compass-pipeline-copier</AssemblyName>
+    <RootNamespace>PipelineCopier</RootNamespace>
   </PropertyGroup>
+
+  <!-- The .NET tool on nuget.org; release.yml checks the release's tag against Version -->
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>compass-pipeline-copier</ToolCommandName>
+    <PackageId>CompassPipelineCopier</PackageId>
+    <Description>Copies the aggregation pipelines MongoDB Compass saved for one collection, and the collection's indexes, to other collections.</Description>
+    <Authors>Darko Martinovic</Authors>
+    <Copyright>Copyright (c) 2026 Darko Martinovic</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>mongodb;compass;aggregation;pipelines;indexes;dotnet-tool</PackageTags>
+    <PackageProjectUrl>https://github.com/Darko-Martinovic/CompassPipeLineCopier</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Darko-Martinovic/CompassPipeLineCopier</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>https://github.com/Darko-Martinovic/CompassPipeLineCopier/releases</PackageReleaseNotes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The package's own README: nuget.org can't follow the repository README's relative links -->
+    <None Include="PackageReadme.md" Pack="true" PackagePath="README.md" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="MongoDB.Driver" Version="3.13.0" />
