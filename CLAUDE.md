@@ -20,15 +20,15 @@ dotnet run --project src/PipelineCopier -- --dry-run
 
 - `App.cs`: the System.CommandLine root command and `Run`, which runs the three steps and writes the report to a `TextWriter` (tests pass a `StringWriter`). Exit codes: 0, 1 (`Failed`), 2 (`InvalidArguments`).
 - `SavedPipelines.cs`: the Compass step, pure file work, with a `TimeProvider` for `lastModified`.
-- `IndexCopier.cs`: creates each index with a raw `createIndexes` command from the source's `listIndexes` document minus `v` and `ns`, so every option is copied without mapping it. Don't go back to `CreateIndexOptions`, which dropped collation, text weights and others. Errors 85 and 86 are conflicts, anything else from the server is a failure.
-- `IndexUsage.cs`: `$indexStats`.
-- `MongoNamespace.cs`: `database.collection`, split at the first dot (collection names may contain dots).
+- `IndexCopier.cs`: creates each index with a raw `createIndexes` command from the source's `listIndexes` document minus `v` and `ns`, so every option is copied without mapping it. Don't go back to `CreateIndexOptions`, which dropped collation, text weights and others. Errors 85 and 86 are conflicts, anything else from the server is a failure. A missing target is created with a raw `create` carrying the source's `listCollections` options (time-series, clusteredIndex minus `v`, capped, validator, collation); clustered indexes are skipped as part of the collection. A `MongoCommandException` on one target becomes that target's `Error`, so the others still run. The dry run predicts outcomes by comparing names and keys (`Predict`).
+- `IndexUsage.cs`: `$indexStats`, summed per index name (mongos returns a row per shard).
+- `MongoNamespace.cs`: `database.collection`, split at the first dot (collection names may contain dots), with MongoDB's naming rules checked and `://` refused without echoing it, so a misplaced connection string never reaches the output or a pipeline file.
 
 ## Rules the tool keeps (tests cover each)
 
 - Saved pipelines are matched by name: a target pipeline with a source pipeline's name is replaced, others are kept unless `--mirror`.
-- Nothing is deleted when the source has no saved pipelines, or when a file isn't a saved pipeline.
-- Copies are written (to `<id>.json.partial`, then moved) before anything is deleted.
+- Nothing is deleted when the source has no saved pipelines, or when a file isn't a saved pipeline (not JSON, no namespace, a duplicate property). Nameless source pipelines are not copied or matched.
+- Copies are written (to `<id>.json.partial`, then moved) before anything is deleted; a failed write takes back that target's copies. Stale `*.json.partial` files are removed at the start of a run. Cancellation is checked between targets.
 - `--dry-run` changes nothing, in the folder or in MongoDB.
 - The connection string is never printed (it can hold a password); errors name the servers only, and `--connection` has no default value so `--help` can't show `MONGODB_URI`.
 
